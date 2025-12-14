@@ -4,7 +4,9 @@ A proof-of-concept mesh network of DER (Distributed Energy Resource) gateways de
 
 ## Quick Start
 
-### 1. Generate Certificates
+### Phase 1: Basic mTLS Communication (Current)
+
+#### 1. Generate Certificates
 
 ```bash
 cargo run --bin gen_certs
@@ -18,46 +20,87 @@ This generates:
 
 **Note**: Private keys (`*.key`) are gitignored and not committed. You must regenerate them on each machine.
 
-### 2. Run the Gateways
+#### 2. Run a Gateway Server
 
-Open 3 terminal sessions:
+**Terminal 1 - Start Gateway A:**
+```bash
+cargo run --bin mesh_gateway -- --node-id gateway-a --port 8001
+```
+
+You should see output like:
+```
+🚀 Starting Mesh Gateway: gateway-a
+📁 Certificate: certs/gateway-a.crt
+🔐 Private Key: certs/gateway-a.key
+🏛️  CA Certificate: certs/ca.crt
+INFO mesh_gateway::server: Starting HTTPS server on 127.0.0.1:8001
+INFO mesh_gateway::server: TLS configured for node: gateway-a
+INFO mesh_gateway::server: Listening on https://127.0.0.1:8001
+```
+
+#### 3. Test mTLS Connection
+
+**In another terminal, test the health endpoint:**
+
+Using Gateway A's certificate:
+```bash
+curl --cacert certs/ca.crt \
+     --cert certs/gateway-a.crt \
+     --key certs/gateway-a.key \
+     https://localhost:8001/health
+```
+
+Expected response:
+```json
+{"status":"healthy","node_id":"gateway-a","uptime_seconds":0}
+```
+
+**Test cross-gateway authentication** (Gateway B connecting to Gateway A):
+```bash
+curl --cacert certs/ca.crt \
+     --cert certs/gateway-b.crt \
+     --key certs/gateway-b.key \
+     https://localhost:8001/health
+```
+
+This proves mutual TLS is working - Gateway B can authenticate to Gateway A using its own certificate!
+
+#### 4. Run Multiple Gateways (Optional)
 
 **Terminal 1 - Gateway A:**
 ```bash
-cargo run -- --config configs/gateway-a.toml
+cargo run --bin mesh_gateway -- --node-id gateway-a --port 8001
 ```
 
 **Terminal 2 - Gateway B:**
 ```bash
-cargo run -- --config configs/gateway-b.toml
+cargo run --bin mesh_gateway -- --node-id gateway-b --port 8002
 ```
 
 **Terminal 3 - Gateway C:**
 ```bash
-cargo run -- --config configs/gateway-c.toml
+cargo run --bin mesh_gateway -- --node-id gateway-c --port 8003
 ```
 
-### 3. Test Communication
-
-Send a message from Gateway A to Gateway B:
+Test each gateway:
 ```bash
-curl --cacert certs/ca.crt \
-     --cert certs/gateway-a.crt \
-     --key certs/gateway-a.key \
-     -X POST https://localhost:8002/message/send \
-     -H "Content-Type: application/json" \
-     -d '{"to": "gateway-b", "content": "Hello!"}'
+# Test Gateway A
+curl --cacert certs/ca.crt --cert certs/gateway-a.crt --key certs/gateway-a.key https://localhost:8001/health
+
+# Test Gateway B
+curl --cacert certs/ca.crt --cert certs/gateway-b.crt --key certs/gateway-b.key https://localhost:8002/health
+
+# Test Gateway C
+curl --cacert certs/ca.crt --cert certs/gateway-c.crt --key certs/gateway-c.key https://localhost:8003/health
 ```
 
-Send a message through the mesh (A → B → C):
-```bash
-curl --cacert certs/ca.crt \
-     --cert certs/gateway-a.crt \
-     --key certs/gateway-a.key \
-     -X POST https://localhost:8001/message/send \
-     -H "Content-Type: application/json" \
-     -d '{"to": "gateway-c", "content": "Hello via mesh!"}'
-```
+### Phase 2+: Mesh Routing (Coming Soon)
+
+Features in development:
+- Peer-to-peer message routing
+- Multi-hop mesh communication
+- Self-healing network topology
+- Dynamic peer discovery
 
 ## Project Structure
 
