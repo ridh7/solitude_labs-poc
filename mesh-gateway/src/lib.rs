@@ -5,4 +5,5 @@
 // 3. Reuse modules across multiple binaries (e.g., main.rs and gen_certs.rs)
 
 pub mod certs;
+pub mod client;
 pub mod server;
