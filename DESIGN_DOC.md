@@ -98,7 +98,7 @@ Each gateway is a **single Rust binary** that acts as:
 ### Core Technologies
 
 ```yaml
-Language: Rust (2021 edition)
+Language: Rust (2024 edition)
 
 HTTP Framework:
   Server: axum (async web framework)
