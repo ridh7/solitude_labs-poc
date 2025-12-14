@@ -21,7 +21,7 @@ pub async fn start_server(
     listen_addr: SocketAddr,
     cert_path: impl AsRef<Path>,
     key_path: impl AsRef<Path>,
-    ca_cert_path: impl AsRef<Path>,
+    _ca_cert_path: impl AsRef<Path>, // TODO: Add client certificate verification
 ) -> Result<()> {
     tracing::info!("Starting HTTPS server on {}", listen_addr);
 
