@@ -1,6 +1,6 @@
 [workspace]
 members = [
     "hello_cargo",
-    "guessing_game",
+    "guessing_game", "mesh-gateway",
 ]
 resolver = "2"
