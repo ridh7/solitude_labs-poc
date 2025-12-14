@@ -1,3 +1,5 @@
+use mesh_gateway::certs;
+
 fn main() {
-    println!("Hello, world!");
+    println!("Mesh Gateway - Starting...");
 }
