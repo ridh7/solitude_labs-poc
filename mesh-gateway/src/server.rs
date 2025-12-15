@@ -6,8 +6,12 @@ use axum::{
     Json, Router,
 };
 use axum_server::tls_rustls::RustlsConfig;
+use rustls::{server::AllowAnyAuthenticatedClient, ServerConfig};
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::Arc;
+
+use crate::certs::{load_ca_cert, load_cert, load_private_key};
 
 /// Shared application state
 #[derive(Clone)]
@@ -40,7 +44,7 @@ pub async fn start_server(
     listen_addr: SocketAddr,
     cert_path: impl AsRef<Path>,
     key_path: impl AsRef<Path>,
-    _ca_cert_path: impl AsRef<Path>, // TODO: Add client certificate verification
+    ca_cert_path: impl AsRef<Path>,
 ) -> Result<()> {
     tracing::info!("Starting HTTPS server on {}", listen_addr);
 
@@ -50,13 +54,27 @@ pub async fn start_server(
     // Build the Axum application with routes
     let app = create_app(state);
 
-    // Configure TLS with mTLS (client certificate verification)
-    let tls_config = RustlsConfig::from_pem_file(
-        PathBuf::from(cert_path.as_ref()),
-        PathBuf::from(key_path.as_ref()),
-    )
-    .await
-    .context("Failed to load TLS configuration")?;
+    // Configure mTLS
+    // 1. Load CA certificate to verify clients
+    let ca_store = load_ca_cert(&ca_cert_path)
+        .context("Failed to load CA certificate")?;
+    
+    let client_verifier = AllowAnyAuthenticatedClient::new(ca_store);
+
+    // 2. Load server certificate and private key
+    let certs = load_cert(&cert_path)
+        .context("Failed to load server certificate")?;
+    let key = load_private_key(&key_path)
+        .context("Failed to load server private key")?;
+
+    // 3. Build Rustls configuration
+    let config = ServerConfig::builder()
+        .with_safe_defaults()
+        .with_client_cert_verifier(Arc::new(client_verifier))
+        .with_single_cert(certs, key)
+        .context("Failed to create TLS configuration")?;
+
+    let tls_config = RustlsConfig::from_config(Arc::new(config));
 
     tracing::info!("TLS configured for node: {}", node_id);
     tracing::info!("Listening on https://{}", listen_addr);
