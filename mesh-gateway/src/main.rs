@@ -1,30 +1,16 @@
 use anyhow::Result;
 use clap::Parser;
+use mesh_gateway::config::GatewayConfig;
+use mesh_gateway::routing::RoutingTable;
 use std::net::SocketAddr;
 
 #[derive(Parser, Debug)]
 #[command(name = "mesh-gateway")]
 #[command(about = "Zero-trust mesh gateway network", long_about = None)]
 struct Args {
-    /// Node ID for this gateway
-    #[arg(short, long, default_value = "gateway-a")]
-    node_id: String,
-
-    /// Port to listen on
-    #[arg(short, long, default_value = "8001")]
-    port: u16,
-
-    /// Path to certificate file
-    #[arg(long, default_value = "certs/gateway-a.crt")]
-    cert: String,
-
-    /// Path to private key file
-    #[arg(long, default_value = "certs/gateway-a.key")]
-    key: String,
-
-    /// Path to CA certificate
-    #[arg(long, default_value = "certs/ca.crt")]
-    ca_cert: String,
+    /// Path to configuration file
+    #[arg(short, long, default_value = "configs/gateway-a.toml")]
+    config: String,
 }
 
 #[tokio::main]
@@ -39,20 +25,30 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    tracing::info!("🚀 Starting Mesh Gateway: {}", args.node_id);
-    tracing::info!("📁 Certificate: {}", args.cert);
-    tracing::info!("🔐 Private Key: {}", args.key);
-    tracing::info!("🏛️  CA Certificate: {}", args.ca_cert);
+    // Load configuration from file
+    tracing::info!("📄 Loading configuration from: {}", args.config);
+    let config = GatewayConfig::from_file(&args.config)?;
 
-    let listen_addr: SocketAddr = format!("127.0.0.1:{}", args.port).parse()?;
+    tracing::info!("🚀 Starting Mesh Gateway: {}", config.node_id);
+    tracing::info!("📁 Certificate: {}", config.cert_path);
+    tracing::info!("🔐 Private Key: {}", config.key_path);
+    tracing::info!("🏛️  CA Certificate: {}", config.ca_cert_path);
+    tracing::info!("👥 Configured peers: {}", config.peers.len());
+
+    // Create routing table from config
+    let routing_table = RoutingTable::from_config(config.peers.clone());
+    tracing::info!("🗺️  Routing table initialized with {} peers", routing_table.peer_count());
+
+    let listen_addr: SocketAddr = config.listen_addr().parse()?;
 
     // Start the HTTPS server
     mesh_gateway::server::start_server(
-        args.node_id,
+        config.node_id,
         listen_addr,
-        args.cert,
-        args.key,
-        args.ca_cert,
+        config.cert_path,
+        config.key_path,
+        config.ca_cert_path,
+        routing_table,
     )
     .await?;
 

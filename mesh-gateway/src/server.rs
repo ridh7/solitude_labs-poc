@@ -1,3 +1,4 @@
+use crate::routing::RoutingTable;
 use crate::types::{HealthResponse, NodeInfo, PeersResponse, SendMessageRequest, SendMessageResponse};
 use anyhow::{Context, Result};
 use axum::{
@@ -19,14 +20,16 @@ pub struct AppState {
     pub node_id: String,
     pub listen_addr: String,
     pub start_time: std::time::SystemTime,
+    pub routing_table: RoutingTable,
 }
 
 impl AppState {
-    pub fn new(node_id: String, listen_addr: String) -> Self {
+    pub fn new(node_id: String, listen_addr: String, routing_table: RoutingTable) -> Self {
         Self {
             node_id,
             listen_addr,
             start_time: std::time::SystemTime::now(),
+            routing_table,
         }
     }
 
@@ -45,11 +48,12 @@ pub async fn start_server(
     cert_path: impl AsRef<Path>,
     key_path: impl AsRef<Path>,
     ca_cert_path: impl AsRef<Path>,
+    routing_table: RoutingTable,
 ) -> Result<()> {
     tracing::info!("Starting HTTPS server on {}", listen_addr);
 
     // Create shared application state
-    let state = AppState::new(node_id.clone(), listen_addr.to_string());
+    let state = AppState::new(node_id.clone(), listen_addr.to_string(), routing_table);
 
     // Build the Axum application with routes
     let app = create_app(state);
@@ -109,18 +113,25 @@ async fn health_handler(State(state): State<AppState>) -> Json<HealthResponse> {
 
 /// Peer info endpoint - returns information about this gateway
 async fn peer_info_handler(State(state): State<AppState>) -> Json<NodeInfo> {
+    let peer_ids: Vec<String> = state
+        .routing_table
+        .get_all_peers()
+        .iter()
+        .map(|p| p.node_id.clone())
+        .collect();
+
     Json(NodeInfo {
         node_id: state.node_id.clone(),
         listen_addr: state.listen_addr.clone(),
-        peers: vec![], // TODO: Add actual peer list
+        peers: peer_ids,
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
 }
 
 /// List all peers endpoint
-async fn peers_handler(State(_state): State<AppState>) -> Json<PeersResponse> {
-    // TODO: Return actual peer list from routing table
-    Json(PeersResponse { peers: vec![] })
+async fn peers_handler(State(state): State<AppState>) -> Json<PeersResponse> {
+    let peers = state.routing_table.get_all_peers();
+    Json(PeersResponse { peers })
 }
 
 /// Send message endpoint
@@ -134,11 +145,25 @@ async fn send_message_handler(
         request.content
     );
 
-    // TODO: Implement actual message routing
-    Json(SendMessageResponse {
-        status: "queued".to_string(),
-        route: vec![state.node_id.clone()],
-    })
+    // Find route to destination
+    let route = state.routing_table.find_route(&request.to);
+
+    match route {
+        Some(route_path) => {
+            // Prepend current node to the route
+            let mut full_route = vec![state.node_id.clone()];
+            full_route.extend(route_path);
+
+            Json(SendMessageResponse {
+                status: "queued".to_string(),
+                route: full_route,
+            })
+        }
+        None => Json(SendMessageResponse {
+            status: "no_route".to_string(),
+            route: vec![state.node_id.clone()],
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -147,7 +172,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_health_response() {
-        let state = AppState::new("test-node".to_string(), "127.0.0.1:8001".to_string());
+        let routing_table = RoutingTable::new();
+        let state = AppState::new("test-node".to_string(), "127.0.0.1:8001".to_string(), routing_table);
         let response = health_handler(State(state)).await;
         assert_eq!(response.0.status, "healthy");
         assert_eq!(response.0.node_id, "test-node");
@@ -155,7 +181,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_peer_info() {
-        let state = AppState::new("test-node".to_string(), "127.0.0.1:8001".to_string());
+        let routing_table = RoutingTable::new();
+        let state = AppState::new("test-node".to_string(), "127.0.0.1:8001".to_string(), routing_table);
         let response = peer_info_handler(State(state)).await;
         assert_eq!(response.0.node_id, "test-node");
         assert_eq!(response.0.listen_addr, "127.0.0.1:8001");

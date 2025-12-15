@@ -24,15 +24,18 @@ This generates:
 
 **Terminal 1 - Start Gateway A:**
 ```bash
-cargo run --bin mesh_gateway -- --node-id gateway-a --port 8001
+cargo run -- --config configs/gateway-a.toml
 ```
 
 You should see output like:
 ```
+📄 Loading configuration from: configs/gateway-a.toml
 🚀 Starting Mesh Gateway: gateway-a
 📁 Certificate: certs/gateway-a.crt
 🔐 Private Key: certs/gateway-a.key
 🏛️  CA Certificate: certs/ca.crt
+👥 Configured peers: 2
+🗺️  Routing table initialized with 2 peers
 INFO mesh_gateway::server: Starting HTTPS server on 127.0.0.1:8001
 INFO mesh_gateway::server: TLS configured for node: gateway-a
 INFO mesh_gateway::server: Listening on https://127.0.0.1:8001
@@ -77,7 +80,7 @@ curl --cacert certs/ca.crt \
 
 Expected response:
 ```json
-{"node_id":"gateway-a","listen_addr":"127.0.0.1:8001","peers":[],"version":"0.1.0"}
+{"node_id":"gateway-a","listen_addr":"127.0.0.1:8001","peers":["gateway-b","gateway-c"],"version":"0.1.0"}
 ```
 
 List peers:
@@ -90,8 +93,25 @@ curl --cacert certs/ca.crt \
 
 Expected response:
 ```json
-{"peers":[]}
+{
+  "peers": [
+    {
+      "node_id": "gateway-b",
+      "address": "127.0.0.1:8002",
+      "status": "unknown",
+      "last_seen": null
+    },
+    {
+      "node_id": "gateway-c",
+      "address": "127.0.0.1:8003",
+      "status": "unknown",
+      "last_seen": null
+    }
+  ]
+}
 ```
+
+**Note:** Peer status is `unknown` until health checks are implemented in Phase 4.
 
 Send a message:
 ```bash
@@ -105,26 +125,26 @@ curl --cacert certs/ca.crt \
 
 Expected response:
 ```json
-{"status":"queued","route":["gateway-a"]}
+{"status":"no_route","route":["gateway-a"]}
 ```
 
-**Note:** Peers list is empty and messages are only queued (not routed yet). Full mesh routing comes in Phase 3.
+**Note:** Messages return `no_route` because peers are in `unknown` status. Peer-to-peer message forwarding will be implemented in Phase 3 continuation, and peer status will be set to `connected` via health checks in Phase 4.
 
 #### 4. Run Multiple Gateways (Optional)
 
 **Terminal 1 - Gateway A:**
 ```bash
-cargo run --bin mesh_gateway -- --node-id gateway-a --port 8001
+cargo run -- --config configs/gateway-a.toml
 ```
 
 **Terminal 2 - Gateway B:**
 ```bash
-cargo run --bin mesh_gateway -- --node-id gateway-b --port 8002
+cargo run -- --config configs/gateway-b.toml
 ```
 
 **Terminal 3 - Gateway C:**
 ```bash
-cargo run --bin mesh_gateway -- --node-id gateway-c --port 8003
+cargo run -- --config configs/gateway-c.toml
 ```
 
 Test each gateway:
@@ -139,18 +159,23 @@ curl --cacert certs/ca.crt --cert certs/gateway-b.crt --key certs/gateway-b.key 
 curl --cacert certs/ca.crt --cert certs/gateway-c.crt --key certs/gateway-c.key https://localhost:8003/health
 ```
 
-### Phase 3-4: Mesh Routing & Self-Healing (Coming Soon)
+### Phase 3: Mesh Routing (Partially Complete)
 
-**Phase 3: Routing Implementation**
-- Configuration file parser (load peers from TOML)
-- Routing table (track direct and multi-hop routes)
-- Peer-to-peer message forwarding
-- Multi-hop mesh communication
+**Completed:**
+- ✅ Configuration file parser (load peers from TOML)
+- ✅ Routing table structure (thread-safe, with peer tracking)
+- ✅ Peer discovery from config on startup
+- ✅ Updated `/peers` endpoint with real routing table data
+- ✅ Route finding for direct peers
 
-**Phase 4: Self-Healing**
-- Periodic health checks
+**In Progress:**
+- 🚧 Peer-to-peer message forwarding (direct connections)
+- 🚧 Multi-hop mesh communication (routing through intermediary nodes)
+
+**Phase 4: Self-Healing (Coming Soon)**
+- Periodic health checks to update peer status
 - Automatic peer failure detection
-- Route recalculation
+- Route recalculation when topology changes
 - Network resilience testing
 
 ## Project Structure
@@ -161,14 +186,14 @@ mesh-gateway/
 │   ├── main.rs              # Entry point & CLI
 │   ├── server.rs            # HTTPS server (Axum)
 │   ├── client.rs            # HTTPS client (Reqwest)
-│   ├── router.rs            # Mesh routing logic
+│   ├── routing.rs           # Routing table & mesh logic
 │   ├── certs.rs             # Certificate handling
-│   ├── config.rs            # Config file parsing
+│   ├── config.rs            # Config file parsing (TOML)
 │   ├── types.rs             # Shared types
 │   └── bin/
 │       └── gen_certs.rs     # Certificate generation
 ├── certs/                   # Generated certificates
-├── configs/                 # Gateway configurations
+├── configs/                 # Gateway configurations (TOML)
 └── scripts/                 # Helper scripts
 ```
 
@@ -187,10 +212,13 @@ mesh-gateway/
 - ✅ TLS 1.2+ encryption
 
 ### Mesh Networking
-- ✅ Peer-to-peer communication
-- ✅ Multi-hop message routing
-- ✅ Self-healing network topology
-- ✅ No single point of failure
+- ✅ Peer-to-peer communication (mTLS)
+- ✅ Configuration-driven peer discovery
+- ✅ Thread-safe routing table
+- ✅ Route finding for direct connections
+- 🚧 Multi-hop message routing (in progress)
+- 🚧 Self-healing network topology (Phase 4)
+- ✅ No single point of failure (decentralized architecture)
 
 ## API Endpoints
 
@@ -209,20 +237,20 @@ Returns health status and uptime.
 ```
 
 ### GET /peer/info
-Returns information about this gateway.
+Returns information about this gateway, including the list of configured peer node IDs.
 
 **Response:**
 ```json
 {
   "node_id": "gateway-a",
   "listen_addr": "127.0.0.1:8001",
-  "peers": [],
+  "peers": ["gateway-b", "gateway-c"],
   "version": "0.1.0"
 }
 ```
 
 ### GET /peers
-Lists all connected peer gateways.
+Lists all peer gateways from the routing table.
 
 **Response:**
 ```json
@@ -231,16 +259,22 @@ Lists all connected peer gateways.
     {
       "node_id": "gateway-b",
       "address": "127.0.0.1:8002",
-      "status": "connected",
-      "last_seen": "2025-12-14T18:30:00Z"
+      "status": "unknown",
+      "last_seen": null
+    },
+    {
+      "node_id": "gateway-c",
+      "address": "127.0.0.1:8003",
+      "status": "unknown",
+      "last_seen": null
     }
   ]
 }
 ```
-**Note:** Currently returns empty array. Will be populated in Phase 3.
+**Note:** Peers are populated from the config file. Status is `unknown` until health checks are implemented in Phase 4. Once connected, status will change to `connected` and `last_seen` will be populated.
 
 ### POST /message/send
-Send a message to another gateway.
+Send a message to another gateway. Uses the routing table to find a path to the destination.
 
 **Request:**
 ```json
@@ -250,14 +284,23 @@ Send a message to another gateway.
 }
 ```
 
-**Response:**
+**Response when no route is available:**
+```json
+{
+  "status": "no_route",
+  "route": ["gateway-a"]
+}
+```
+
+**Response when route is found (after Phase 4 health checks):**
 ```json
 {
   "status": "queued",
   "route": ["gateway-a", "gateway-b"]
 }
 ```
-**Note:** Currently only queues messages. Actual routing in Phase 3.
+
+**Note:** Currently returns `no_route` because peers are in `unknown` status. Once Phase 4 health checks mark peers as `connected`, the routing will work and messages will be forwarded.
 
 ## Certificate Trust Chain
 
