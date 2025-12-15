@@ -44,6 +44,15 @@ impl RoutingTable {
         }
     }
 
+    /// Mark all peers as connected (temporary for testing until health checks are implemented)
+    pub fn mark_all_connected(&self) {
+        let mut inner = self.inner.write().unwrap();
+        for peer in inner.peers.values_mut() {
+            peer.status = PeerStatus::Connected;
+            peer.last_seen = Some(SystemTime::now());
+        }
+    }
+
     /// Add or update a peer in the routing table
     pub fn add_peer(&self, peer: PeerInfo) {
         let mut inner = self.inner.write().unwrap();

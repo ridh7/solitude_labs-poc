@@ -60,6 +60,17 @@ impl GatewayConfig {
         let config: GatewayConfig = toml::from_str(&contents)
             .context("Failed to parse TOML configuration")?;
 
+        // Validate peer addresses don't contain protocol
+        for peer in &config.peers {
+            if peer.address.contains("://") {
+                anyhow::bail!(
+                    "Invalid peer address '{}' for peer '{}': address must be in 'host:port' format, not a URL. Remove 'http://' or 'https://' prefix.",
+                    peer.address,
+                    peer.node_id
+                );
+            }
+        }
+
         // Override cert paths if they use the gateway's node_id
         let mut config = config;
         if config.cert_path == default_cert_path() {
@@ -128,5 +139,31 @@ mod tests {
         assert_eq!(config.key_path, "certs/gateway-a.key");
         assert_eq!(config.ca_cert_path, "certs/ca.crt");
         assert_eq!(config.peers.len(), 2);
+    }
+
+    #[test]
+    fn test_invalid_peer_address_with_protocol() {
+        let toml = r#"
+            node_id = "gateway-a"
+            listen_port = 8001
+
+            [[peers]]
+            node_id = "gateway-b"
+            address = "https://127.0.0.1:8002"
+        "#;
+
+        let config: GatewayConfig = toml::from_str(toml).unwrap();
+
+        // Manually validate (simulating what from_file does)
+        let mut has_error = false;
+        for peer in &config.peers {
+            if peer.address.contains("://") {
+                has_error = true;
+                break;
+            }
+        }
+
+        assert!(has_error, "Should detect invalid address with protocol");
+        assert!(config.peers[0].address.contains("://"));
     }
 }

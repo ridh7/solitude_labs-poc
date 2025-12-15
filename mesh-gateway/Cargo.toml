@@ -16,7 +16,7 @@ tower-http = { version = "0.4", features = ["trace"] }
 hyper = { version = "0.14", features = ["full"] }
 
 # HTTP client
-reqwest = { version = "0.11", features = ["rustls-tls"], default-features = false }
+reqwest = { version = "0.11", features = ["rustls-tls", "json"], default-features = false }
 
 # TLS
 rustls = "0.21"
@@ -25,7 +25,7 @@ tokio-rustls = "0.24"
 
 # Certificate generation
 rcgen = { version = "0.11", features = ["x509-parser"] }
-time = "0.3"
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use mesh_gateway::client::create_mtls_client;
 use mesh_gateway::config::GatewayConfig;
 use mesh_gateway::routing::RoutingTable;
 use std::net::SocketAddr;
@@ -39,6 +40,20 @@ async fn main() -> Result<()> {
     let routing_table = RoutingTable::from_config(config.peers.clone());
     tracing::info!("🗺️  Routing table initialized with {} peers", routing_table.peer_count());
 
+    // TODO: Remove this once health checks are implemented in Phase 4
+    // For now, mark all peers as connected to enable message forwarding
+    routing_table.mark_all_connected();
+    tracing::info!("✓ All peers marked as connected (temporary until health checks)");
+
+    // Create mTLS HTTP client for communicating with peers
+    tracing::info!("🔐 Creating mTLS HTTP client...");
+    let http_client = create_mtls_client(
+        &config.cert_path,
+        &config.key_path,
+        &config.ca_cert_path,
+    )?;
+    tracing::info!("✓ mTLS client ready");
+
     let listen_addr: SocketAddr = config.listen_addr().parse()?;
 
     // Start the HTTPS server
@@ -49,6 +64,7 @@ async fn main() -> Result<()> {
         config.key_path,
         config.ca_cert_path,
         routing_table,
+        http_client,
     )
     .await?;
 

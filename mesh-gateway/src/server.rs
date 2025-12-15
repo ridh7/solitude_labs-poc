@@ -1,5 +1,5 @@
 use crate::routing::RoutingTable;
-use crate::types::{HealthResponse, NodeInfo, PeersResponse, SendMessageRequest, SendMessageResponse};
+use crate::types::{HealthResponse, NodeInfo, PeersResponse, ReceiveMessageRequest, SendMessageRequest, SendMessageResponse};
 use anyhow::{Context, Result};
 use axum::{
     extract::State,
@@ -7,6 +7,7 @@ use axum::{
     Json, Router,
 };
 use axum_server::tls_rustls::RustlsConfig;
+use reqwest::Client;
 use rustls::{server::AllowAnyAuthenticatedClient, ServerConfig};
 use std::net::SocketAddr;
 use std::path::Path;
@@ -21,15 +22,17 @@ pub struct AppState {
     pub listen_addr: String,
     pub start_time: std::time::SystemTime,
     pub routing_table: RoutingTable,
+    pub http_client: Client,
 }
 
 impl AppState {
-    pub fn new(node_id: String, listen_addr: String, routing_table: RoutingTable) -> Self {
+    pub fn new(node_id: String, listen_addr: String, routing_table: RoutingTable, http_client: Client) -> Self {
         Self {
             node_id,
             listen_addr,
             start_time: std::time::SystemTime::now(),
             routing_table,
+            http_client,
         }
     }
 
@@ -49,11 +52,12 @@ pub async fn start_server(
     key_path: impl AsRef<Path>,
     ca_cert_path: impl AsRef<Path>,
     routing_table: RoutingTable,
+    http_client: Client,
 ) -> Result<()> {
     tracing::info!("Starting HTTPS server on {}", listen_addr);
 
     // Create shared application state
-    let state = AppState::new(node_id.clone(), listen_addr.to_string(), routing_table);
+    let state = AppState::new(node_id.clone(), listen_addr.to_string(), routing_table, http_client);
 
     // Build the Axum application with routes
     let app = create_app(state);
@@ -99,6 +103,7 @@ fn create_app(state: AppState) -> Router {
         .route("/peer/info", get(peer_info_handler))
         .route("/peers", get(peers_handler))
         .route("/message/send", post(send_message_handler))
+        .route("/message/receive", post(receive_message_handler))
         .with_state(state)
 }
 
@@ -150,19 +155,102 @@ async fn send_message_handler(
 
     match route {
         Some(route_path) => {
-            // Prepend current node to the route
-            let mut full_route = vec![state.node_id.clone()];
-            full_route.extend(route_path);
+            // Get next hop (first node in route)
+            let next_hop = &route_path[0];
 
+            // Get peer info to find address
+            let peer_info = state.routing_table.get_peer(next_hop);
+
+            if let Some(peer) = peer_info {
+                // Build full route including current node
+                let mut full_route = vec![state.node_id.clone()];
+                full_route.extend(route_path.clone());
+
+                // Forward message to next hop
+                let forward_request = ReceiveMessageRequest {
+                    from: state.node_id.clone(),
+                    to: request.to.clone(),
+                    content: request.content.clone(),
+                    route: full_route.clone(),
+                };
+
+                // Note: peer.address is validated in config.rs to be in "host:port" format
+                // without protocol prefix, so this URL construction is safe
+                let url = format!("https://{}/message/receive", peer.address);
+
+                match state.http_client
+                    .post(&url)
+                    .json(&forward_request)
+                    .send()
+                    .await
+                {
+                    Ok(response) => {
+                        if response.status().is_success() {
+                            tracing::info!("Message forwarded to {} via {}", request.to, next_hop);
+                            Json(SendMessageResponse {
+                                status: "delivered".to_string(),
+                                route: full_route,
+                            })
+                        } else {
+                            tracing::error!("Failed to forward message: HTTP {}", response.status());
+                            Json(SendMessageResponse {
+                                status: "failed".to_string(),
+                                route: vec![state.node_id.clone()],
+                            })
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to forward message to {}: {}", next_hop, e);
+                        Json(SendMessageResponse {
+                            status: "failed".to_string(),
+                            route: vec![state.node_id.clone()],
+                        })
+                    }
+                }
+            } else {
+                tracing::error!("Peer {} not found in routing table", next_hop);
+                Json(SendMessageResponse {
+                    status: "no_route".to_string(),
+                    route: vec![state.node_id.clone()],
+                })
+            }
+        }
+        None => {
+            tracing::warn!("No route found to {}", request.to);
             Json(SendMessageResponse {
-                status: "queued".to_string(),
-                route: full_route,
+                status: "no_route".to_string(),
+                route: vec![state.node_id.clone()],
             })
         }
-        None => Json(SendMessageResponse {
+    }
+}
+
+/// Receive message endpoint - receives forwarded messages from other gateways
+async fn receive_message_handler(
+    State(state): State<AppState>,
+    Json(request): Json<ReceiveMessageRequest>,
+) -> Json<SendMessageResponse> {
+    tracing::info!(
+        "Received forwarded message from {} to {}: {}",
+        request.from,
+        request.to,
+        request.content
+    );
+
+    // Check if this message is for us
+    if request.to == state.node_id {
+        tracing::info!("Message delivered to final destination: {}", request.content);
+        Json(SendMessageResponse {
+            status: "delivered".to_string(),
+            route: request.route,
+        })
+    } else {
+        // TODO: Multi-hop forwarding - forward to next hop
+        tracing::warn!("Multi-hop routing not yet implemented. Message for {} cannot be forwarded.", request.to);
+        Json(SendMessageResponse {
             status: "no_route".to_string(),
-            route: vec![state.node_id.clone()],
-        }),
+            route: request.route,
+        })
     }
 }
 
@@ -173,7 +261,8 @@ mod tests {
     #[tokio::test]
     async fn test_health_response() {
         let routing_table = RoutingTable::new();
-        let state = AppState::new("test-node".to_string(), "127.0.0.1:8001".to_string(), routing_table);
+        let client = reqwest::Client::new();
+        let state = AppState::new("test-node".to_string(), "127.0.0.1:8001".to_string(), routing_table, client);
         let response = health_handler(State(state)).await;
         assert_eq!(response.0.status, "healthy");
         assert_eq!(response.0.node_id, "test-node");
@@ -182,7 +271,8 @@ mod tests {
     #[tokio::test]
     async fn test_peer_info() {
         let routing_table = RoutingTable::new();
-        let state = AppState::new("test-node".to_string(), "127.0.0.1:8001".to_string(), routing_table);
+        let client = reqwest::Client::new();
+        let state = AppState::new("test-node".to_string(), "127.0.0.1:8001".to_string(), routing_table, client);
         let response = peer_info_handler(State(state)).await;
         assert_eq!(response.0.node_id, "test-node");
         assert_eq!(response.0.listen_addr, "127.0.0.1:8001");

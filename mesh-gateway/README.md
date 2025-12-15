@@ -98,20 +98,20 @@ Expected response:
     {
       "node_id": "gateway-b",
       "address": "127.0.0.1:8002",
-      "status": "unknown",
-      "last_seen": null
+      "status": "connected",
+      "last_seen": "2024-12-14T18:30:25Z"
     },
     {
       "node_id": "gateway-c",
       "address": "127.0.0.1:8003",
-      "status": "unknown",
-      "last_seen": null
+      "status": "connected",
+      "last_seen": "2024-12-14T18:30:25Z"
     }
   ]
 }
 ```
 
-**Note:** Peer status is `unknown` until health checks are implemented in Phase 4.
+**Note:** All peers are currently marked as `connected` on startup (even if they're not actually running) to enable message forwarding testing. The `last_seen` timestamp is set to the gateway's startup time. In Phase 4, health checks will properly verify peer availability and update status dynamically.
 
 Send a message:
 ```bash
@@ -123,12 +123,17 @@ curl --cacert certs/ca.crt \
      -d '{"to":"gateway-b","content":"Hello!"}'
 ```
 
-Expected response:
+Expected response (if gateway-b is not running or not reachable):
 ```json
-{"status":"no_route","route":["gateway-a"]}
+{"status":"failed","route":["gateway-a"]}
 ```
 
-**Note:** Messages return `no_route` because peers are in `unknown` status. Peer-to-peer message forwarding will be implemented in Phase 3 continuation, and peer status will be set to `connected` via health checks in Phase 4.
+Expected response (if gateway-b is running and reachable):
+```json
+{"status":"delivered","route":["gateway-a","gateway-b"]}
+```
+
+**Note:** For message forwarding to work, you need to have the destination gateway running. All peers are temporarily marked as `connected` on startup to enable testing. In Phase 4, health checks will properly manage peer status.
 
 #### 4. Run Multiple Gateways (Optional)
 
@@ -159,7 +164,44 @@ curl --cacert certs/ca.crt --cert certs/gateway-b.crt --key certs/gateway-b.key 
 curl --cacert certs/ca.crt --cert certs/gateway-c.crt --key certs/gateway-c.key https://localhost:8003/health
 ```
 
-### Phase 3: Mesh Routing (Partially Complete)
+#### 5. Test Peer-to-Peer Message Forwarding
+
+With multiple gateways running, you can now test actual message forwarding between them:
+
+**Send a message from Gateway A to Gateway B:**
+```bash
+curl --cacert certs/ca.crt \
+     --cert certs/gateway-a.crt \
+     --key certs/gateway-a.key \
+     -X POST https://localhost:8001/message/send \
+     -H "Content-Type: application/json" \
+     -d '{"to":"gateway-b","content":"Hello from A to B!"}'
+```
+
+Expected response:
+```json
+{"status":"delivered","route":["gateway-a","gateway-b"]}
+```
+
+Check the logs in Terminal 2 (gateway-b) - you should see:
+```
+INFO mesh_gateway::server: Received forwarded message from gateway-a to gateway-b: Hello from A to B!
+INFO mesh_gateway::server: Message delivered to final destination: Hello from A to B!
+```
+
+**Send a message from Gateway B to Gateway C:**
+```bash
+curl --cacert certs/ca.crt \
+     --cert certs/gateway-b.crt \
+     --key certs/gateway-b.key \
+     -X POST https://localhost:8002/message/send \
+     -H "Content-Type: application/json" \
+     -d '{"to":"gateway-c","content":"Hello from B to C!"}'
+```
+
+This demonstrates that the mesh network can route messages peer-to-peer using mTLS authentication!
+
+### Phase 3: Mesh Routing (Almost Complete)
 
 **Completed:**
 - ✅ Configuration file parser (load peers from TOML)
@@ -167,9 +209,11 @@ curl --cacert certs/ca.crt --cert certs/gateway-c.crt --key certs/gateway-c.key 
 - ✅ Peer discovery from config on startup
 - ✅ Updated `/peers` endpoint with real routing table data
 - ✅ Route finding for direct peers
+- ✅ mTLS HTTP client for peer communication
+- ✅ `/message/receive` endpoint for accepting forwarded messages
+- ✅ Peer-to-peer message forwarding (direct connections)
 
-**In Progress:**
-- 🚧 Peer-to-peer message forwarding (direct connections)
+**Remaining:**
 - 🚧 Multi-hop mesh communication (routing through intermediary nodes)
 
 **Phase 4: Self-Healing (Coming Soon)**
@@ -259,22 +303,22 @@ Lists all peer gateways from the routing table.
     {
       "node_id": "gateway-b",
       "address": "127.0.0.1:8002",
-      "status": "unknown",
-      "last_seen": null
+      "status": "connected",
+      "last_seen": "2024-12-14T18:30:25Z"
     },
     {
       "node_id": "gateway-c",
       "address": "127.0.0.1:8003",
-      "status": "unknown",
-      "last_seen": null
+      "status": "connected",
+      "last_seen": "2024-12-14T18:30:25Z"
     }
   ]
 }
 ```
-**Note:** Peers are populated from the config file. Status is `unknown` until health checks are implemented in Phase 4. Once connected, status will change to `connected` and `last_seen` will be populated.
+**Note:** Peers are populated from the config file. All peers are marked as `connected` on startup (regardless of actual availability) to enable message forwarding testing. The `last_seen` timestamp shows when the gateway started. In Phase 4, health checks will properly verify peer availability and update status/timestamps dynamically.
 
 ### POST /message/send
-Send a message to another gateway. Uses the routing table to find a path to the destination.
+Send a message to another gateway. Uses the routing table to find a path and forwards the message via mTLS.
 
 **Request:**
 ```json
@@ -292,15 +336,46 @@ Send a message to another gateway. Uses the routing table to find a path to the 
 }
 ```
 
-**Response when route is found (after Phase 4 health checks):**
+**Response when message delivery fails:**
 ```json
 {
-  "status": "queued",
+  "status": "failed",
+  "route": ["gateway-a"]
+}
+```
+
+**Response when message is successfully delivered:**
+```json
+{
+  "status": "delivered",
   "route": ["gateway-a", "gateway-b"]
 }
 ```
 
-**Note:** Currently returns `no_route` because peers are in `unknown` status. Once Phase 4 health checks mark peers as `connected`, the routing will work and messages will be forwarded.
+**Note:** Messages are actually forwarded to the destination gateway using mTLS. The destination must be running and reachable for delivery to succeed.
+
+### POST /message/receive
+Internal endpoint used by gateways to receive forwarded messages from peers. This endpoint is called automatically during message forwarding.
+
+**Request:**
+```json
+{
+  "from": "gateway-a",
+  "to": "gateway-b",
+  "content": "Hello!",
+  "route": ["gateway-a", "gateway-b"]
+}
+```
+
+**Response:**
+```json
+{
+  "status": "delivered",
+  "route": ["gateway-a", "gateway-b"]
+}
+```
+
+**Note:** This endpoint is for internal use between gateways. Direct user access is not typically needed.
 
 ## Certificate Trust Chain
 

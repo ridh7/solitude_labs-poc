@@ -1,5 +1,46 @@
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Custom serializer for SystemTime to RFC3339/ISO 8601 format
+mod systemtime_serialization {
+    use super::*;
+    use serde::ser::Serializer;
+    use serde::de::Deserializer;
+
+    pub fn serialize<S>(time: &Option<SystemTime>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match time {
+            Some(t) => {
+                let duration = t.duration_since(UNIX_EPOCH).map_err(serde::ser::Error::custom)?;
+                let datetime = time::OffsetDateTime::from_unix_timestamp(duration.as_secs() as i64)
+                    .map_err(serde::ser::Error::custom)?;
+                let formatted = datetime
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .map_err(serde::ser::Error::custom)?;
+                serializer.serialize_str(&formatted)
+            }
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<SystemTime>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt: Option<String> = Option::deserialize(deserializer)?;
+        match opt {
+            Some(s) => {
+                let datetime = time::OffsetDateTime::parse(&s, &time::format_description::well_known::Rfc3339)
+                    .map_err(serde::de::Error::custom)?;
+                let duration = std::time::Duration::from_secs(datetime.unix_timestamp() as u64);
+                Ok(Some(UNIX_EPOCH + duration))
+            }
+            None => Ok(None),
+        }
+    }
+}
 
 /// Represents information about a peer gateway
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -7,6 +48,7 @@ pub struct PeerInfo {
     pub node_id: String,
     pub address: String,
     pub status: PeerStatus,
+    #[serde(with = "systemtime_serialization")]
     pub last_seen: Option<SystemTime>,
 }
 
@@ -24,6 +66,15 @@ pub enum PeerStatus {
 pub struct SendMessageRequest {
     pub to: String,
     pub content: String,
+}
+
+/// Request to receive a forwarded message from another gateway
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ReceiveMessageRequest {
+    pub from: String,
+    pub to: String,
+    pub content: String,
+    pub route: Vec<String>,
 }
 
 /// Response after sending a message
