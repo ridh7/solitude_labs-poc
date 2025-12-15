@@ -65,6 +65,51 @@ curl --cacert certs/ca.crt \
 
 This proves mutual TLS is working - Gateway B can authenticate to Gateway A using its own certificate!
 
+**Test all API endpoints:**
+
+Get gateway information:
+```bash
+curl --cacert certs/ca.crt \
+     --cert certs/gateway-a.crt \
+     --key certs/gateway-a.key \
+     https://localhost:8001/peer/info
+```
+
+Expected response:
+```json
+{"node_id":"gateway-a","listen_addr":"127.0.0.1:8001","peers":[],"version":"0.1.0"}
+```
+
+List peers:
+```bash
+curl --cacert certs/ca.crt \
+     --cert certs/gateway-a.crt \
+     --key certs/gateway-a.key \
+     https://localhost:8001/peers
+```
+
+Expected response:
+```json
+{"peers":[]}
+```
+
+Send a message:
+```bash
+curl --cacert certs/ca.crt \
+     --cert certs/gateway-a.crt \
+     --key certs/gateway-a.key \
+     -X POST https://localhost:8001/message/send \
+     -H "Content-Type: application/json" \
+     -d '{"to":"gateway-b","content":"Hello!"}'
+```
+
+Expected response:
+```json
+{"status":"queued","route":["gateway-a"]}
+```
+
+**Note:** Peers list is empty and messages are only queued (not routed yet). Full mesh routing comes in Phase 3.
+
 #### 4. Run Multiple Gateways (Optional)
 
 **Terminal 1 - Gateway A:**
@@ -94,13 +139,19 @@ curl --cacert certs/ca.crt --cert certs/gateway-b.crt --key certs/gateway-b.key 
 curl --cacert certs/ca.crt --cert certs/gateway-c.crt --key certs/gateway-c.key https://localhost:8003/health
 ```
 
-### Phase 2+: Mesh Routing (Coming Soon)
+### Phase 3-4: Mesh Routing & Self-Healing (Coming Soon)
 
-Features in development:
-- Peer-to-peer message routing
+**Phase 3: Routing Implementation**
+- Configuration file parser (load peers from TOML)
+- Routing table (track direct and multi-hop routes)
+- Peer-to-peer message forwarding
 - Multi-hop mesh communication
-- Self-healing network topology
-- Dynamic peer discovery
+
+**Phase 4: Self-Healing**
+- Periodic health checks
+- Automatic peer failure detection
+- Route recalculation
+- Network resilience testing
 
 ## Project Structure
 
@@ -143,12 +194,70 @@ mesh-gateway/
 
 ## API Endpoints
 
-Each gateway exposes:
+Each gateway exposes these HTTPS endpoints (require mTLS authentication):
 
-- `GET /health` - Health check
-- `GET /peer/info` - Gateway information
-- `GET /peers` - List connected peers
-- `POST /message/send` - Send message to another gateway
+### GET /health
+Returns health status and uptime.
+
+**Response:**
+```json
+{
+  "status": "healthy",
+  "node_id": "gateway-a",
+  "uptime_seconds": 123
+}
+```
+
+### GET /peer/info
+Returns information about this gateway.
+
+**Response:**
+```json
+{
+  "node_id": "gateway-a",
+  "listen_addr": "127.0.0.1:8001",
+  "peers": [],
+  "version": "0.1.0"
+}
+```
+
+### GET /peers
+Lists all connected peer gateways.
+
+**Response:**
+```json
+{
+  "peers": [
+    {
+      "node_id": "gateway-b",
+      "address": "127.0.0.1:8002",
+      "status": "connected",
+      "last_seen": "2025-12-14T18:30:00Z"
+    }
+  ]
+}
+```
+**Note:** Currently returns empty array. Will be populated in Phase 3.
+
+### POST /message/send
+Send a message to another gateway.
+
+**Request:**
+```json
+{
+  "to": "gateway-b",
+  "content": "Hello from gateway-a!"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "queued",
+  "route": ["gateway-a", "gateway-b"]
+}
+```
+**Note:** Currently only queues messages. Actual routing in Phase 3.
 
 ## Certificate Trust Chain
 
