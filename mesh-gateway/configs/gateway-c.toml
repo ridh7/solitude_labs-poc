@@ -1,0 +1,13 @@
+# Configuration for Gateway C
+
+node_id = "gateway-c"
+listen_port = 8003
+
+# Peer gateways that this node can connect to
+[[peers]]
+node_id = "gateway-a"
+address = "127.0.0.1:8001"
+
+[[peers]]
+node_id = "gateway-b"
+address = "127.0.0.1:8002"
