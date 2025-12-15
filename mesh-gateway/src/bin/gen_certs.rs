@@ -69,7 +69,7 @@ fn generate_ca() -> Result<rcgen::Certificate, Box<dyn std::error::Error>> {
 
     // Generate key pair
     params.alg = &PKCS_ECDSA_P256_SHA256;
-    let key_pair = KeyPair::generate(&PKCS_ECDSA_P256_SHA256)?;
+    let _key_pair = KeyPair::generate(&PKCS_ECDSA_P256_SHA256)?;
 
     // Generate certificate
     let cert = rcgen::Certificate::from_params(params)?;
@@ -80,7 +80,7 @@ fn generate_ca() -> Result<rcgen::Certificate, Box<dyn std::error::Error>> {
 /// Generate a gateway certificate signed by the CA
 fn generate_gateway_cert(
     gateway_id: &str,
-    ca_cert: &rcgen::Certificate,
+    _ca_cert: &rcgen::Certificate,
 ) -> Result<rcgen::Certificate, Box<dyn std::error::Error>> {
     let mut params = CertificateParams::default();
 
@@ -93,8 +93,8 @@ fn generate_gateway_cert(
 
     // Add subject alternative names (for TLS)
     params.subject_alt_names = vec![
-        rcgen::SanType::DnsName(gateway_id.to_string().try_into()?),
-        rcgen::SanType::DnsName("localhost".to_string().try_into()?),
+        rcgen::SanType::DnsName(gateway_id.to_string()),
+        rcgen::SanType::DnsName("localhost".to_string()),
         rcgen::SanType::IpAddress(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1))),
     ];
 
