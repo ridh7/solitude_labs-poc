@@ -56,6 +56,15 @@ async fn main() -> Result<()> {
 
     let listen_addr: SocketAddr = config.listen_addr().parse()?;
 
+    // Spawn background task for LSA broadcasts
+    tracing::info!("🔄 Starting link-state routing protocol...");
+    mesh_gateway::server::spawn_lsa_broadcast_task(
+        config.node_id.clone(),
+        routing_table.clone(),
+        http_client.clone(),
+    );
+    tracing::info!("✓ LSA broadcast task started (30s interval)");
+
     // Start the HTTPS server
     mesh_gateway::server::start_server(
         config.node_id,

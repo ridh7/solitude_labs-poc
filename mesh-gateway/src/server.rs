@@ -1,5 +1,5 @@
 use crate::routing::RoutingTable;
-use crate::types::{HealthResponse, NodeInfo, PeersResponse, ReceiveMessageRequest, SendMessageRequest, SendMessageResponse};
+use crate::types::{HealthResponse, LinkStateAdvertisement, LsaResponse, NodeInfo, PeersResponse, ReceiveMessageRequest, SendMessageRequest, SendMessageResponse};
 use anyhow::{Context, Result};
 use axum::{
     extract::State,
@@ -12,6 +12,8 @@ use rustls::{server::AllowAnyAuthenticatedClient, ServerConfig};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time;
 
 use crate::certs::{load_ca_cert, load_cert, load_private_key};
 
@@ -104,6 +106,7 @@ fn create_app(state: AppState) -> Router {
         .route("/peers", get(peers_handler))
         .route("/message/send", post(send_message_handler))
         .route("/message/receive", post(receive_message_handler))
+        .route("/topology/lsa", post(lsa_handler))
         .with_state(state)
 }
 
@@ -150,8 +153,8 @@ async fn send_message_handler(
         request.content
     );
 
-    // Find route to destination
-    let route = state.routing_table.find_route(&request.to);
+    // Find route to destination using link-state routing
+    let route = state.routing_table.find_route_from(&state.node_id, &request.to);
 
     match route {
         Some(route_path) => {
@@ -162,9 +165,9 @@ async fn send_message_handler(
             let peer_info = state.routing_table.get_peer(next_hop);
 
             if let Some(peer) = peer_info {
-                // Build full route including current node
-                let mut full_route = vec![state.node_id.clone()];
-                full_route.extend(route_path.clone());
+                // Build initial route with just the current node (sender)
+                // Each hop will add itself when forwarding
+                let full_route = vec![state.node_id.clone()];
 
                 // Forward message to next hop
                 let forward_request = ReceiveMessageRequest {
@@ -186,11 +189,20 @@ async fn send_message_handler(
                 {
                     Ok(response) => {
                         if response.status().is_success() {
-                            tracing::info!("Message forwarded to {} via {}", request.to, next_hop);
-                            Json(SendMessageResponse {
-                                status: "delivered".to_string(),
-                                route: full_route,
-                            })
+                            // Parse the response to get the actual route taken
+                            match response.json::<SendMessageResponse>().await {
+                                Ok(send_response) => {
+                                    tracing::info!("Message forwarded to {} via {}", request.to, next_hop);
+                                    Json(send_response)
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to parse response from {}: {}", next_hop, e);
+                                    Json(SendMessageResponse {
+                                        status: "failed".to_string(),
+                                        route: vec![state.node_id.clone()],
+                                    })
+                                }
+                            }
                         } else {
                             tracing::error!("Failed to forward message: HTTP {}", response.status());
                             Json(SendMessageResponse {
@@ -240,18 +252,249 @@ async fn receive_message_handler(
     // Check if this message is for us
     if request.to == state.node_id {
         tracing::info!("Message delivered to final destination: {}", request.content);
-        Json(SendMessageResponse {
+        // Add ourselves to the route to show final destination
+        let mut final_route = request.route;
+        final_route.push(state.node_id.clone());
+        return Json(SendMessageResponse {
             status: "delivered".to_string(),
+            route: final_route,
+        });
+    }
+
+    // Multi-hop forwarding: message is not for us, try to forward it
+
+    // Check if we've already seen this message (loop prevention)
+    if request.route.contains(&state.node_id) {
+        tracing::warn!(
+            "Loop detected: {} already in route {:?}. Dropping message.",
+            state.node_id,
+            request.route
+        );
+        return Json(SendMessageResponse {
+            status: "loop_detected".to_string(),
             route: request.route,
+        });
+    }
+
+    // Try to find a route to the destination
+    let route = state.routing_table.find_route_from(&state.node_id, &request.to);
+
+    match route {
+        Some(route_path) => {
+            let next_hop = &route_path[0];
+
+            // Get peer info
+            let peer_info = state.routing_table.get_peer(next_hop);
+
+            if let Some(peer) = peer_info {
+                // Build updated route including current node
+                let mut updated_route = request.route.clone();
+                updated_route.push(state.node_id.clone());
+
+                // Forward message to next hop
+                let forward_request = ReceiveMessageRequest {
+                    from: state.node_id.clone(),
+                    to: request.to.clone(),
+                    content: request.content.clone(),
+                    route: updated_route.clone(),
+                };
+
+                let url = format!("https://{}/message/receive", peer.address);
+
+                match state.http_client
+                    .post(&url)
+                    .json(&forward_request)
+                    .send()
+                    .await
+                {
+                    Ok(response) => {
+                        if response.status().is_success() {
+                            // Parse the response to get the actual route taken
+                            match response.json::<SendMessageResponse>().await {
+                                Ok(send_response) => {
+                                    tracing::info!(
+                                        "Multi-hop: Message for {} forwarded to {} (next hop: {})",
+                                        request.to,
+                                        next_hop,
+                                        next_hop
+                                    );
+                                    Json(send_response)
+                                }
+                                Err(e) => {
+                                    tracing::error!("Multi-hop: Failed to parse response from {}: {}", next_hop, e);
+                                    Json(SendMessageResponse {
+                                        status: "failed".to_string(),
+                                        route: updated_route,
+                                    })
+                                }
+                            }
+                        } else {
+                            tracing::error!(
+                                "Multi-hop: Failed to forward message to {}: HTTP {}",
+                                next_hop,
+                                response.status()
+                            );
+                            Json(SendMessageResponse {
+                                status: "failed".to_string(),
+                                route: updated_route,
+                            })
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Multi-hop: Failed to forward message to {}: {}", next_hop, e);
+                        Json(SendMessageResponse {
+                            status: "failed".to_string(),
+                            route: updated_route,
+                        })
+                    }
+                }
+            } else {
+                tracing::error!("Multi-hop: Peer {} not found in routing table", next_hop);
+                Json(SendMessageResponse {
+                    status: "no_route".to_string(),
+                    route: request.route,
+                })
+            }
+        }
+        None => {
+            tracing::warn!(
+                "Multi-hop: No route to {} from {}. Message cannot be forwarded.",
+                request.to,
+                state.node_id
+            );
+            Json(SendMessageResponse {
+                status: "no_route".to_string(),
+                route: request.route,
+            })
+        }
+    }
+}
+
+/// LSA handler - receives Link State Advertisements from peers
+async fn lsa_handler(
+    State(state): State<AppState>,
+    Json(lsa): Json<LinkStateAdvertisement>,
+) -> Json<LsaResponse> {
+    tracing::info!(
+        "Received LSA from {} (seq: {}, neighbors: {:?})",
+        lsa.node_id,
+        lsa.sequence,
+        lsa.neighbors
+    );
+
+    // Process the LSA
+    let is_new = state.routing_table.process_lsa(lsa.clone());
+
+    if is_new {
+        tracing::info!("New LSA processed from {}, flooding to neighbors", lsa.node_id);
+
+        // Flood LSA to all connected peers (OSPF-style flooding)
+        // This ensures rapid topology propagation across the mesh
+        let peers = state.routing_table.get_connected_peers();
+        let lsa_clone = lsa.clone();
+        let client_clone = state.http_client.clone();
+
+        // Spawn flooding task to not block the response
+        tokio::spawn(async move {
+            for peer in peers {
+                // Skip flooding back to the originator
+                if peer.node_id == lsa_clone.node_id {
+                    continue;
+                }
+
+                let url = format!("https://{}/topology/lsa", peer.address);
+                let lsa_to_send = lsa_clone.clone();
+                let client = client_clone.clone();
+
+                // Flood to each peer in parallel
+                tokio::spawn(async move {
+                    match client.post(&url).json(&lsa_to_send).send().await {
+                        Ok(response) => {
+                            if response.status().is_success() {
+                                tracing::debug!("Flooded LSA from {} to {}", lsa_to_send.node_id, peer.node_id);
+                            } else {
+                                tracing::warn!(
+                                    "Failed to flood LSA to {}: HTTP {}",
+                                    peer.node_id,
+                                    response.status()
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!("Failed to flood LSA to {}: {}", peer.node_id, e);
+                        }
+                    }
+                });
+            }
+        });
+
+        Json(LsaResponse {
+            status: "accepted".to_string(),
+            message: format!("LSA from {} accepted and flooded", lsa.node_id),
         })
     } else {
-        // TODO: Multi-hop forwarding - forward to next hop
-        tracing::warn!("Multi-hop routing not yet implemented. Message for {} cannot be forwarded.", request.to);
-        Json(SendMessageResponse {
-            status: "no_route".to_string(),
-            route: request.route,
+        tracing::debug!("Duplicate or old LSA from {}, ignored", lsa.node_id);
+        Json(LsaResponse {
+            status: "ignored".to_string(),
+            message: format!("LSA from {} already known or outdated", lsa.node_id),
         })
     }
+}
+
+/// Spawns a background task that periodically broadcasts LSAs to all connected peers
+pub fn spawn_lsa_broadcast_task(
+    node_id: String,
+    routing_table: RoutingTable,
+    http_client: Client,
+) {
+    tokio::spawn(async move {
+        // Wait a bit before starting to let the network stabilize
+        time::sleep(Duration::from_secs(5)).await;
+
+        let mut interval = time::interval(Duration::from_secs(30));
+
+        loop {
+            interval.tick().await;
+
+            // Generate our LSA
+            let lsa = routing_table.generate_lsa(&node_id);
+            tracing::debug!(
+                "Broadcasting LSA (seq: {}, neighbors: {:?})",
+                lsa.sequence,
+                lsa.neighbors
+            );
+
+            // Get all connected peers
+            let peers = routing_table.get_connected_peers();
+
+            // Send LSA to each peer
+            for peer in peers {
+                let url = format!("https://{}/topology/lsa", peer.address);
+                let lsa_clone = lsa.clone();
+                let client_clone = http_client.clone();
+
+                // Spawn a task for each peer to send in parallel
+                tokio::spawn(async move {
+                    match client_clone.post(&url).json(&lsa_clone).send().await {
+                        Ok(response) => {
+                            if response.status().is_success() {
+                                tracing::debug!("LSA sent to {}", peer.node_id);
+                            } else {
+                                tracing::warn!(
+                                    "Failed to send LSA to {}: HTTP {}",
+                                    peer.node_id,
+                                    response.status()
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to send LSA to {}: {}", peer.node_id, e);
+                        }
+                    }
+                });
+            }
+        }
+    });
 }
 
 #[cfg(test)]

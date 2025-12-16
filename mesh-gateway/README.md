@@ -201,7 +201,72 @@ curl --cacert certs/ca.crt \
 
 This demonstrates that the mesh network can route messages peer-to-peer using mTLS authentication!
 
-### Phase 3: Mesh Routing (Almost Complete)
+#### 6. Test Multi-Hop Routing with Link-State Protocol
+
+The mesh network now implements **link-state routing** (similar to OSPF) for automatic route discovery:
+
+**How it works:**
+1. Every 30 seconds, each gateway broadcasts a **Link State Advertisement (LSA)** to all its peers
+2. LSAs contain: node_id, list of neighbors, sequence number
+3. Gateways forward LSAs they receive to their other peers
+4. Each gateway builds a complete network topology from all LSAs
+5. **Dijkstra's algorithm** finds shortest paths through the network
+
+**Network Topology (Linear):**
+```
+gateway-a ←→ gateway-b ←→ gateway-c
+```
+
+**Start gateways with linear topology:**
+
+**Terminal 1 - Gateway A:**
+```bash
+cargo run -- --config configs/gateway-a-linear.toml
+```
+
+**Terminal 2 - Gateway B (intermediary):**
+```bash
+cargo run -- --config configs/gateway-b-linear.toml
+```
+
+**Terminal 3 - Gateway C:**
+```bash
+cargo run -- --config configs/gateway-c-linear.toml
+```
+
+**Wait 35 seconds** for LSAs to propagate (5s initial delay + 30s for first broadcast).
+
+Check the logs - you should see:
+```
+INFO mesh_gateway::server: Received LSA from gateway-b (seq: 1, neighbors: ["gateway-a", "gateway-c"])
+```
+
+**Now send a multi-hop message from A to C:**
+
+```bash
+curl --cacert certs/ca.crt \
+     --cert certs/gateway-a.crt \
+     --key certs/gateway-a.key \
+     -X POST https://localhost:8001/message/send \
+     -H "Content-Type: application/json" \
+     -d '{"to":"gateway-c","content":"Multi-hop from A to C!"}'
+```
+
+**Expected response:**
+```json
+{"status":"delivered","route":["gateway-a","gateway-b","gateway-c"]}
+```
+
+**What happened:**
+1. Gateway A doesn't know Gateway C directly
+2. Gateway A received LSA from Gateway B saying it knows Gateway C
+3. Gateway A built a topology graph and ran Dijkstra's algorithm
+4. Route found: A → B → C
+5. Message sent to B, B forwarded to C, full route tracked!
+
+This demonstrates true mesh routing with **automatic topology discovery** and **shortest path routing**!
+
+### Phase 3: Mesh Routing (Complete!)
 
 **Completed:**
 - ✅ Configuration file parser (load peers from TOML)
@@ -212,9 +277,18 @@ This demonstrates that the mesh network can route messages peer-to-peer using mT
 - ✅ mTLS HTTP client for peer communication
 - ✅ `/message/receive` endpoint for accepting forwarded messages
 - ✅ Peer-to-peer message forwarding (direct connections)
-
-**Remaining:**
-- 🚧 Multi-hop mesh communication (routing through intermediary nodes)
+- ✅ Multi-hop message forwarding infrastructure (intermediate nodes can relay)
+- ✅ Loop prevention in multi-hop forwarding
+- ✅ Route tracking across multiple hops
+- ✅ Config validation (peer address format)
+- ✅ Timestamp serialization (RFC3339 format)
+- ✅ **Link-State Routing Protocol (OSPF-like)**
+  - Link State Advertisements (LSAs) with sequence numbers
+  - Periodic LSA broadcasting (30s interval)
+  - LSA database for topology storage
+  - **Dijkstra's shortest path algorithm**
+  - Automatic route discovery through unknown nodes
+  - Complete network topology awareness
 
 **Phase 4: Self-Healing (Coming Soon)**
 - Periodic health checks to update peer status
@@ -258,9 +332,14 @@ mesh-gateway/
 ### Mesh Networking
 - ✅ Peer-to-peer communication (mTLS)
 - ✅ Configuration-driven peer discovery
-- ✅ Thread-safe routing table
-- ✅ Route finding for direct connections
-- 🚧 Multi-hop message routing (in progress)
+- ✅ Thread-safe routing table with LSA database
+- ✅ Link-state routing protocol (OSPF-like)
+- ✅ Dijkstra's shortest path algorithm
+- ✅ Automatic topology discovery via LSA exchange
+- ✅ Multi-hop message forwarding (relay capability)
+- ✅ Multi-hop route discovery (finding paths through unknown nodes)
+- ✅ Loop prevention in message routing
+- ✅ Route tracking across multiple hops
 - 🚧 Self-healing network topology (Phase 4)
 - ✅ No single point of failure (decentralized architecture)
 
@@ -355,27 +434,86 @@ Send a message to another gateway. Uses the routing table to find a path and for
 **Note:** Messages are actually forwarded to the destination gateway using mTLS. The destination must be running and reachable for delivery to succeed.
 
 ### POST /message/receive
-Internal endpoint used by gateways to receive forwarded messages from peers. This endpoint is called automatically during message forwarding.
+Internal endpoint used by gateways to receive forwarded messages from peers. Handles both final delivery and multi-hop forwarding.
 
 **Request:**
 ```json
 {
   "from": "gateway-a",
-  "to": "gateway-b",
+  "to": "gateway-c",
   "content": "Hello!",
   "route": ["gateway-a", "gateway-b"]
 }
 ```
 
-**Response:**
+**Response (delivered to final destination):**
 ```json
 {
   "status": "delivered",
+  "route": ["gateway-a", "gateway-b", "gateway-c"]
+}
+```
+
+**Response (loop detected):**
+```json
+{
+  "status": "loop_detected",
+  "route": ["gateway-a", "gateway-b", "gateway-a"]
+}
+```
+
+**Response (no route for multi-hop):**
+```json
+{
+  "status": "no_route",
   "route": ["gateway-a", "gateway-b"]
 }
 ```
 
+**Behavior:**
+- If message is for this gateway: delivers and responds with "delivered"
+- If message is for another gateway: forwards to next hop (multi-hop routing)
+- If loop detected: drops message and responds with "loop_detected"
+- If no route available: responds with "no_route"
+
 **Note:** This endpoint is for internal use between gateways. Direct user access is not typically needed.
+
+### POST /topology/lsa
+Receives Link State Advertisements (LSAs) from peer gateways. Part of the link-state routing protocol.
+
+**Request:**
+```json
+{
+  "node_id": "gateway-b",
+  "neighbors": ["gateway-a", "gateway-c"],
+  "sequence": 1,
+  "timestamp": "2024-12-14T18:30:25Z"
+}
+```
+
+**Response (accepted):**
+```json
+{
+  "status": "accepted",
+  "message": "LSA from gateway-b accepted and processed"
+}
+```
+
+**Response (ignored - duplicate or old):**
+```json
+{
+  "status": "ignored",
+  "message": "LSA from gateway-b already known or outdated"
+}
+```
+
+**Behavior:**
+- LSAs are automatically broadcasted every 30 seconds
+- Sequence numbers prevent processing old LSAs
+- LSA database is used to build complete network topology
+- Dijkstra's algorithm uses topology for route finding
+
+**Note:** This endpoint is called automatically by the link-state routing protocol. Manual testing not typically needed.
 
 ## Certificate Trust Chain
 

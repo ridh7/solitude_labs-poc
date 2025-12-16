@@ -1,0 +1,15 @@
+# Configuration for Gateway B (Linear Topology for Multi-Hop Testing)
+# In this topology, gateway-b is the intermediary node.
+# It can reach both gateway-a and gateway-c directly.
+
+node_id = "gateway-b"
+listen_port = 8002
+
+# Both gateway-a and gateway-c are direct peers
+[[peers]]
+node_id = "gateway-a"
+address = "127.0.0.1:8001"
+
+[[peers]]
+node_id = "gateway-c"
+address = "127.0.0.1:8003"

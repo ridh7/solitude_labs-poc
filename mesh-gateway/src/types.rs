@@ -106,3 +106,27 @@ pub struct HealthResponse {
     pub node_id: String,
     pub uptime_seconds: u64,
 }
+
+/// Link State Advertisement - shares topology information with peers
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinkStateAdvertisement {
+    /// The node that originated this LSA
+    pub node_id: String,
+
+    /// List of direct peers (neighbors) this node can reach
+    pub neighbors: Vec<String>,
+
+    /// Sequence number to detect newer LSAs (higher is newer)
+    pub sequence: u64,
+
+    /// Timestamp when this LSA was created
+    #[serde(with = "systemtime_serialization")]
+    pub timestamp: Option<SystemTime>,
+}
+
+/// Response when receiving an LSA
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LsaResponse {
+    pub status: String,
+    pub message: String,
+}

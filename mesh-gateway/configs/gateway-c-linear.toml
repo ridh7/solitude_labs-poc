@@ -1,0 +1,11 @@
+# Configuration for Gateway C (Linear Topology for Multi-Hop Testing)
+# In this topology, gateway-c can only reach gateway-b directly.
+# To reach gateway-a, it must route through gateway-b (multi-hop).
+
+node_id = "gateway-c"
+listen_port = 8003
+
+# Only gateway-b is a direct peer
+[[peers]]
+node_id = "gateway-b"
+address = "127.0.0.1:8002"
