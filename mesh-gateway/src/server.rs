@@ -497,6 +497,88 @@ pub fn spawn_lsa_broadcast_task(
     });
 }
 
+/// Spawns a background task that periodically checks peer health
+pub fn spawn_health_check_task(
+    routing_table: RoutingTable,
+    http_client: Client,
+) {
+    tokio::spawn(async move {
+        // Wait before starting initial health checks
+        time::sleep(Duration::from_secs(10)).await;
+
+        let mut interval = time::interval(Duration::from_secs(15));
+
+        loop {
+            interval.tick().await;
+
+            // Get all peers (both connected and disconnected)
+            let peers = routing_table.get_all_peers();
+
+            for peer in peers {
+                let url = format!("https://{}/health", peer.address);
+                let peer_node_id = peer.node_id.clone();
+                let routing_table_clone = routing_table.clone();
+                let client_clone = http_client.clone();
+
+                // Check each peer in parallel
+                tokio::spawn(async move {
+                    // Set timeout for health check
+                    let timeout_duration = Duration::from_secs(5);
+
+                    match tokio::time::timeout(
+                        timeout_duration,
+                        client_clone.get(&url).send()
+                    ).await {
+                        Ok(Ok(response)) => {
+                            if response.status().is_success() {
+                                // Peer is healthy
+                                let current_status = routing_table_clone.get_peer(&peer_node_id)
+                                    .map(|p| p.status);
+
+                                if current_status != Some(crate::types::PeerStatus::Connected) {
+                                    tracing::info!("Peer {} is now reachable", peer_node_id);
+                                }
+
+                                routing_table_clone.update_peer_status(
+                                    &peer_node_id,
+                                    crate::types::PeerStatus::Connected
+                                );
+                            } else {
+                                // Peer returned non-success status
+                                tracing::warn!(
+                                    "Health check failed for {}: HTTP {}",
+                                    peer_node_id,
+                                    response.status()
+                                );
+                                routing_table_clone.update_peer_status(
+                                    &peer_node_id,
+                                    crate::types::PeerStatus::Disconnected
+                                );
+                            }
+                        }
+                        Ok(Err(e)) => {
+                            // Request failed
+                            tracing::debug!("Health check failed for {}: {}", peer_node_id, e);
+                            routing_table_clone.update_peer_status(
+                                &peer_node_id,
+                                crate::types::PeerStatus::Disconnected
+                            );
+                        }
+                        Err(_) => {
+                            // Timeout
+                            tracing::debug!("Health check timeout for {}", peer_node_id);
+                            routing_table_clone.update_peer_status(
+                                &peer_node_id,
+                                crate::types::PeerStatus::Disconnected
+                            );
+                        }
+                    }
+                });
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

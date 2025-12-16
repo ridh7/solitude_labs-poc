@@ -40,11 +40,6 @@ async fn main() -> Result<()> {
     let routing_table = RoutingTable::from_config(config.peers.clone());
     tracing::info!("🗺️  Routing table initialized with {} peers", routing_table.peer_count());
 
-    // TODO: Remove this once health checks are implemented in Phase 4
-    // For now, mark all peers as connected to enable message forwarding
-    routing_table.mark_all_connected();
-    tracing::info!("✓ All peers marked as connected (temporary until health checks)");
-
     // Create mTLS HTTP client for communicating with peers
     tracing::info!("🔐 Creating mTLS HTTP client...");
     let http_client = create_mtls_client(
@@ -55,6 +50,14 @@ async fn main() -> Result<()> {
     tracing::info!("✓ mTLS client ready");
 
     let listen_addr: SocketAddr = config.listen_addr().parse()?;
+
+    // Spawn background task for peer health checks
+    tracing::info!("🏥 Starting peer health monitoring...");
+    mesh_gateway::server::spawn_health_check_task(
+        routing_table.clone(),
+        http_client.clone(),
+    );
+    tracing::info!("✓ Health check task started (15s interval)");
 
     // Spawn background task for LSA broadcasts
     tracing::info!("🔄 Starting link-state routing protocol...");
