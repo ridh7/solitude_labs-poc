@@ -300,10 +300,52 @@ Response: 200 OK
     {
       "node_id": "gateway-c",
       "address": "127.0.0.1:8003",
-      "status": "connected",
-      "last_seen": "2025-12-14T18:30:01Z"
+      "status": "disconnected",
+      "last_seen": "2025-12-14T18:28:10Z"
     }
   ]
+}
+```
+
+#### 5. Receive Message (Internal)
+```http
+POST /message/receive
+Headers:
+  Content-Type: application/json
+
+Body:
+{
+  "from": "gateway-a",
+  "to": "gateway-c",
+  "content": "Hello!",
+  "route": ["gateway-a", "gateway-b"]
+}
+
+Response: 200 OK
+{
+  "status": "delivered",
+  "route": ["gateway-a", "gateway-b", "gateway-c"]
+}
+```
+
+#### 6. Link State Advertisement (Internal)
+```http
+POST /topology/lsa
+Headers:
+  Content-Type: application/json
+
+Body:
+{
+  "node_id": "gateway-b",
+  "neighbors": ["gateway-a", "gateway-c"],
+  "sequence": 1,
+  "timestamp": "2025-12-14T18:30:25Z"
+}
+
+Response: 200 OK
+{
+  "status": "accepted",
+  "message": "LSA from gateway-b accepted and flooded"
 }
 ```
 
@@ -350,35 +392,31 @@ node_id = "gateway-c"
 address = "127.0.0.1:8003"
 ```
 
-### Routing Table
+### Routing Table & Link-State Protocol
 
-Each gateway maintains a routing table:
+Each gateway maintains:
+1. **Routing table** - Direct peer information
+2. **LSA database** - Complete network topology from Link State Advertisements
+3. **Dijkstra's algorithm** - Computes shortest paths from topology
 
 ```rust
 struct RoutingTable {
-    // Direct neighbors
-    neighbors: HashMap<NodeId, PeerInfo>,
+    // Direct neighbors from config
+    peers: HashMap<NodeId, PeerInfo>,
 
-    // Routes to non-neighbors
-    routes: HashMap<NodeId, NodeId>, // destination -> next_hop
+    // Link-state database (OSPF-like)
+    lsa_database: HashMap<NodeId, LinkStateAdvertisement>,
+
+    // LSA sequence counter
+    own_lsa_sequence: u64,
 }
 ```
 
-**Example:**
-```
-Gateway A's routing table:
-┌─────────────┬────────────┬─────────────┐
-│ Destination │ Next Hop   │ Hop Count   │
-├─────────────┼────────────┼─────────────┤
-│ gateway-b   │ gateway-b  │ 1 (direct)  │
-│ gateway-c   │ gateway-c  │ 1 (direct)  │
-└─────────────┴────────────┴─────────────┘
-
-If Gateway B connects to Gateway D:
-┌─────────────┬────────────┬─────────────┐
-│ gateway-d   │ gateway-b  │ 2 (via B)   │
-└─────────────┴────────────┴─────────────┘
-```
+**Link-State Routing (OSPF-like):**
+- Every 30s, each gateway broadcasts LSA containing its neighbors
+- LSAs are flooded to all connected peers immediately
+- Dijkstra's algorithm computes shortest paths from topology graph
+- Automatic route discovery through unknown intermediate nodes
 
 ### Self-Healing
 
@@ -393,22 +431,23 @@ After B fails:
 
 Self-healing:
 1. A detects B is down (health check timeout)
-2. A removes B from routing table
-3. A tries alternative route to C (if exists)
-4. Network reconfigures automatically
+2. A marks B as disconnected in routing table
+3. Dijkstra excludes disconnected peers from graph
+4. Routes automatically recalculate using only healthy peers
 ```
 
-Implementation:
-- Periodic health checks (every 10 seconds)
-- Timeout after 3 failed checks
-- Auto-remove failed peers
-- Rebuild routing table
+**Implemented:**
+- Periodic health checks (every 15 seconds)
+- 5-second timeout per health check request
+- Peers start as `unknown`, transition to `connected`/`disconnected` dynamically
+- Only `connected` peers included in routing and LSA broadcasts
+- Automatic peer recovery when failed nodes return
 
 ---
 
 ## Implementation Plan
 
-### Phase 1: Basic HTTPS with mTLS
+### Phase 1: Basic HTTPS with mTLS ✅ Complete
 
 **Goals:**
 - Generate certificates (Root CA + 3 gateway certs)
@@ -417,69 +456,41 @@ Implementation:
 - Implement mTLS authentication
 - Test peer-to-peer connection
 
-**Deliverables:**
-- Certificate generation script
-- Basic gateway binary
-- Can establish mTLS connection between 2 gateways
+**Implemented:**
+- Certificate generation utility (Rust binary)
+- HTTPS server with mTLS validation
+- HTTPS client with certificate-based auth
+- Cross-gateway authentication working
 
-**Success Criteria:**
-- Gateway A can connect to Gateway B with mTLS
-- Certificate validation works
-- Reject connections with invalid certs
+### Phase 2: RESTful API ✅ Complete
 
-### Phase 2: RESTful API
+**Implemented:**
+- `/health`, `/peer/info`, `/peers`, `/message/send` endpoints
+- `/message/receive` (internal) for multi-hop forwarding
+- `/topology/lsa` (internal) for link-state routing
+- JSON serialization with RFC3339 timestamps
+- Structured logging with tracing
 
-**Goals:**
-- Implement `/health` endpoint
-- Implement `/peer/info` endpoint
-- Implement `/message/send` endpoint
-- Add structured logging
+### Phase 3: Mesh Routing ✅ Complete
 
-**Deliverables:**
-- Full REST API
-- JSON serialization
-- Request/response handling
+**Implemented:**
+- Link-state routing protocol (OSPF-like)
+- LSA database with sequence numbers
+- Dijkstra's shortest path algorithm
+- Automatic topology discovery via LSA flooding
+- Multi-hop message forwarding with route tracking
+- Loop prevention and error handling
+- TOML configuration with validation
 
-**Success Criteria:**
-- Can query peer info via API
-- Can send messages between gateways
-- Logs show authentication flow
+### Phase 4: Self-Healing ✅ Complete
 
-### Phase 3: Mesh Routing
-
-**Goals:**
-- Build routing table
-- Implement message forwarding
-- Add peer discovery from config
-- Multi-hop message routing
-
-**Deliverables:**
-- Routing algorithm
-- Configuration file parsing
-- 3-gateway mesh network
-
-**Success Criteria:**
-- Gateway A can send message to C via B
-- Routing table updates correctly
-- Messages delivered through mesh
-
-### Phase 4: Self-Healing
-
-**Goals:**
-- Health check mechanism
-- Automatic peer removal on failure
-- Route recalculation
-- Network resilience
-
-**Deliverables:**
-- Health check background task
-- Failure detection
-- Auto-recovery
-
-**Success Criteria:**
-- Detect when peer goes offline
-- Remove failed peer from routing
-- Network continues operating
+**Implemented:**
+- Periodic health checks (15s interval, 5s timeout)
+- Automatic peer failure detection
+- Dynamic status management (Unknown/Connected/Disconnected)
+- Route recalculation using only healthy peers
+- Automatic peer recovery when nodes return
+- Network continues operating through failures
 
 ---
 
@@ -508,15 +519,22 @@ mesh-gateway/
 │
 ├── src/
 │   ├── main.rs            # Entry point + CLI
-│   ├── server.rs          # HTTPS server (Axum)
+│   ├── server.rs          # HTTPS server (Axum) + LSA/health tasks
 │   ├── client.rs          # HTTPS client (Reqwest)
-│   ├── router.rs          # Mesh routing logic
+│   ├── routing.rs         # Routing table, LSA database, Dijkstra
 │   ├── certs.rs           # Certificate handling
-│   ├── config.rs          # Config file parsing
-│   └── types.rs           # Shared types
+│   ├── config.rs          # TOML config parsing & validation
+│   ├── types.rs           # Shared types & serialization
+│   └── bin/
+│       └── gen_certs.rs   # Certificate generation utility
 │
-└── scripts/
-    └── gen_certs.sh       # Certificate generation script
+└── configs/
+    ├── gateway-a.toml
+    ├── gateway-b.toml
+    ├── gateway-c.toml
+    ├── gateway-a-linear.toml  # Linear topology testing
+    ├── gateway-b-linear.toml
+    └── gateway-c-linear.toml
 ```
 
 ---
@@ -526,7 +544,7 @@ mesh-gateway/
 ### Step 1: Generate Certificates
 ```bash
 cd mesh-gateway
-./scripts/gen_certs.sh
+cargo run --bin gen_certs
 ```
 
 ### Step 2: Start Gateways (3 terminals)
@@ -606,6 +624,7 @@ curl --cacert certs/ca.crt \
 6. [Reqwest HTTP Client](https://github.com/seanmonstar/reqwest)
 7. [Rustls TLS Library](https://github.com/rustls/rustls)
 8. [Tokio Async Runtime](https://tokio.rs/)
+9. [OSPF - Open Shortest Path First](https://en.wikipedia.org/wiki/Open_Shortest_Path_First)
 
 ---
 
@@ -616,6 +635,6 @@ curl --cacert certs/ca.crt \
 
 ---
 
-**Last Updated:** 2025-12-14
+**Last Updated:** 2024-12-21
 **Version:** 0.1.0
-**Status:** Design Phase
+**Status:** ✅ Fully Implemented - All Phases Complete
