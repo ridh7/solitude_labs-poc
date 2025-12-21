@@ -2,6 +2,10 @@
 
 A proof-of-concept mesh network of DER (Distributed Energy Resource) gateways demonstrating zero-trust security with mutual TLS authentication, link-state routing, and self-healing capabilities.
 
+## Demo
+
+https://github.com/user-attachments/assets/e7a987d9-7155-43b2-a222-58e3e37e0bbd
+
 ## Features
 
 - ✅ **Zero-Trust Security**: Mutual TLS (mTLS) authentication with certificate-based identity
